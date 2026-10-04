@@ -1,0 +1,1 @@
+{"outputDirectory":"public","rewrites":[{"source":"/api/:route","destination":"/api/index.js?route=:route"}],"functions":{"api/index.js":{"maxDuration":30}}}
