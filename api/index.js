@@ -45,17 +45,33 @@ async function gemini(prompt){
   }
   throw new Error('Gemini is busy or rate-limited: '+last);
 }
+// Groq model IDs change often, so we ask Groq which chat models this key can use right now.
+let gm={t:0,list:[]};
+async function groqModels(key){
+  if(Date.now()-gm.t<6e4&&gm.list.length)return gm.list;
+  const r=await fetch('https://api.groq.com/openai/v1/models',{headers:{Authorization:'Bearer '+key}});
+  const d=await r.json().catch(()=>({}));
+  if(r.status===401)throw new Error('Groq rejected the key (check GROQ_API_KEY)');
+  if(!r.ok)throw new Error(d.error?.message||'could not list Groq models');
+  const skip=/whisper|tts|guard|orpheus|embed|safeguard|transcri|vision-preview|distil-whisper/i;
+  const pref=['llama-3.3-70b','gpt-oss-120b','llama-4','qwen','gpt-oss-20b','llama-3.1-8b','gemma','llama'];
+  const rank=id=>{const i=pref.findIndex(x=>id.includes(x));return i<0?99:i};
+  const list=(d.data||[]).filter(m=>m.active!==false&&!skip.test(m.id)).map(m=>m.id).sort((x,y)=>rank(x)-rank(y)).slice(0,5);
+  gm={t:Date.now(),list};return list;
+}
 async function groq(prompt){
   const key=clean(process.env.GROQ_API_KEY);if(!key)throw new Error('GROQ_API_KEY is not set');
+  const models=[...new Set([clean(process.env.GROQ_MODEL),...await groqModels(key)].filter(Boolean))];
+  if(!models.length)throw new Error('No Groq chat models are available for this key');
   let last='request failed';
-  for(const m of [clean(process.env.GROQ_MODEL),'llama-3.3-70b-versatile','llama-3.1-8b-instant'].filter(Boolean)){
+  for(const m of models){
     const r=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+key},body:JSON.stringify({model:m,temperature:0.3,messages:[{role:'system',content:RULES},{role:'user',content:prompt}]})});
     const d=await r.json().catch(()=>({}));
     if(r.ok&&d.choices?.[0]?.message?.content)return d.choices[0].message.content;
     last=d.error?.message||'request failed';
     if(r.status===401)throw new Error('Groq rejected the key (check GROQ_API_KEY)');
   }
-  throw new Error('Groq is busy or rate-limited: '+last);
+  throw new Error('Groq failed: '+last);
 }
 const PROVIDERS={gemini,groq};
 const configured=()=>Object.keys(PROVIDERS).filter(p=>clean(process.env[p.toUpperCase()+'_API_KEY']));
