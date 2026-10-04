@@ -26,11 +26,19 @@ const routes={
     if(req.method!=='POST')return res.status(405).end();if(!authed(req))return res.status(401).json({error:'Unauthorized'});
     const key=process.env.GEMINI_API_KEY;if(!key)return res.status(500).json({error:'AI provider is not configured: GEMINI_API_KEY is missing.'});
     const prompt=String(req.body?.prompt||'').slice(0,40000);if(!prompt)return res.status(400).json({error:'Prompt required'});
-    try{
-      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({systemInstruction:{parts:[{text:RULES}]},contents:[{parts:[{text:prompt}]}]})});
-      const d=await r.json();if(!r.ok)throw new Error(d.error?.message||'request failed');
-      res.json({text:d.candidates[0].content.parts[0].text});
-    }catch(e){res.status(502).json({error:'Gemini failed: '+e.message+' (check your key, or wait a minute if you hit the free limit)'})}
+    // Model is configurable (GEMINI_MODEL). If one is retired, fall back to the next.
+    const models=[...new Set([process.env.GEMINI_MODEL,'gemini-3.8-flash','gemini-3.5-flash','gemini-2.5-flash'].filter(Boolean))];
+    let lastErr='request failed';
+    for(const m of models){
+      try{
+        const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({systemInstruction:{parts:[{text:RULES}]},contents:[{parts:[{text:prompt}]}]})});
+        const d=await r.json();
+        if(!r.ok){lastErr=d.error?.message||'request failed';if(r.status===404||/no longer available|not found|not supported/i.test(lastErr))continue;throw new Error(lastErr)}
+        const text=d.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('');if(!text)throw new Error('Empty response from the model');
+        return res.json({text});
+      }catch(e){lastErr=e.message;if(!/no longer available|not found|not supported/i.test(lastErr))break}
+    }
+    res.status(502).json({error:'Gemini failed: '+lastErr+' (check your key, or wait a minute if you hit the free limit)'});
   },
   async parse(req,res){
     if(req.method!=='POST')return res.status(405).end();if(!authed(req))return res.status(401).json({error:'Unauthorized'});
