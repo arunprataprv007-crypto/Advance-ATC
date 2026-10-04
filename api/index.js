@@ -24,7 +24,7 @@ const routes={
   async me(req,res){authed(req)?res.json({ok:true}):res.status(401).json({error:'Unauthorized'})},
   async ai(req,res){
     if(req.method!=='POST')return res.status(405).end();if(!authed(req))return res.status(401).json({error:'Unauthorized'});
-    const key=process.env.GEMINI_API_KEY;if(!key)return res.status(500).json({error:'AI provider is not configured: GEMINI_API_KEY is missing.'});
+    const key=(process.env.GEMINI_API_KEY||'').trim().replace(/^["']|["']$/g,'');if(!key)return res.status(500).json({error:'AI provider is not configured: GEMINI_API_KEY is missing.'});
     const prompt=String(req.body?.prompt||'').slice(0,40000);if(!prompt)return res.status(400).json({error:'Prompt required'});
     // Tries each model in turn. Skips to the next on: retired model (404), overloaded (503),
     // rate limit (429). Retries once on overload. GEMINI_MODEL (optional) is tried first.
@@ -36,11 +36,11 @@ const routes={
       for(let attempt=0;attempt<2;attempt++){
         if(Date.now()-t0>22000)break;
         try{
-          const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body});
+          const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`,{method:'POST',headers:{'Content-Type':'application/json'},body});
           const d=await r.json().catch(()=>({}));
           if(r.ok){const text=d.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('');if(text)return res.json({text});lastErr='Empty response from the model';break}
           lastErr=d.error?.message||'request failed';
-          if(r.status===400||r.status===401||r.status===403)return res.status(502).json({error:'Gemini rejected the request: '+lastErr+' (check GEMINI_API_KEY)'});
+          if(r.status===400||r.status===401||r.status===403)return res.status(502).json({error:'Gemini rejected the request: '+lastErr+' Create a new key at aistudio.google.com/apikey, paste it in Vercel as GEMINI_API_KEY with no quotes or spaces, then redeploy.'});
           if(r.status===503&&attempt===0){await sleep(1200);continue}
           break;
         }catch(e){lastErr=e.message;break}
