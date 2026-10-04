@@ -26,19 +26,27 @@ const routes={
     if(req.method!=='POST')return res.status(405).end();if(!authed(req))return res.status(401).json({error:'Unauthorized'});
     const key=process.env.GEMINI_API_KEY;if(!key)return res.status(500).json({error:'AI provider is not configured: GEMINI_API_KEY is missing.'});
     const prompt=String(req.body?.prompt||'').slice(0,40000);if(!prompt)return res.status(400).json({error:'Prompt required'});
-    // Model is configurable (GEMINI_MODEL). If one is retired, fall back to the next.
-    const models=[...new Set([process.env.GEMINI_MODEL,'gemini-3.8-flash','gemini-3.5-flash','gemini-2.5-flash'].filter(Boolean))];
-    let lastErr='request failed';
+    // Tries each model in turn. Skips to the next on: retired model (404), overloaded (503),
+    // rate limit (429). Retries once on overload. GEMINI_MODEL (optional) is tried first.
+    const models=[...new Set([process.env.GEMINI_MODEL,'gemini-3.8-flash','gemini-3.5-flash','gemini-2.5-flash','gemini-3.5-flash-lite','gemini-2.5-flash-lite'].filter(Boolean))];
+    const body=JSON.stringify({systemInstruction:{parts:[{text:RULES}]},contents:[{parts:[{text:prompt}]}]});
+    const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+    const t0=Date.now();let lastErr='request failed';
     for(const m of models){
-      try{
-        const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({systemInstruction:{parts:[{text:RULES}]},contents:[{parts:[{text:prompt}]}]})});
-        const d=await r.json();
-        if(!r.ok){lastErr=d.error?.message||'request failed';if(r.status===404||/no longer available|not found|not supported/i.test(lastErr))continue;throw new Error(lastErr)}
-        const text=d.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('');if(!text)throw new Error('Empty response from the model');
-        return res.json({text});
-      }catch(e){lastErr=e.message;if(!/no longer available|not found|not supported/i.test(lastErr))break}
+      for(let attempt=0;attempt<2;attempt++){
+        if(Date.now()-t0>22000)break;
+        try{
+          const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},body});
+          const d=await r.json().catch(()=>({}));
+          if(r.ok){const text=d.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('');if(text)return res.json({text});lastErr='Empty response from the model';break}
+          lastErr=d.error?.message||'request failed';
+          if(r.status===400||r.status===401||r.status===403)return res.status(502).json({error:'Gemini rejected the request: '+lastErr+' (check GEMINI_API_KEY)'});
+          if(r.status===503&&attempt===0){await sleep(1200);continue}
+          break;
+        }catch(e){lastErr=e.message;break}
+      }
     }
-    res.status(502).json({error:'Gemini failed: '+lastErr+' (check your key, or wait a minute if you hit the free limit)'});
+    res.status(502).json({error:'Gemini is busy or rate-limited right now: '+lastErr+' Please try again in a minute.'});
   },
   async parse(req,res){
     if(req.method!=='POST')return res.status(405).end();if(!authed(req))return res.status(401).json({error:'Unauthorized'});
